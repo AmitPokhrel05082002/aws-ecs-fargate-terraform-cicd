@@ -33,7 +33,7 @@ jobs:
     outputs:
       image_tag: ${{ steps.tag.outputs.value }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - id: tag
         run: echo "value=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
