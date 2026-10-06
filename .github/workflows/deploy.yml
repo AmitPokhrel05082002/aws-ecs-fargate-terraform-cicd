@@ -38,7 +38,7 @@ jobs:
       - id: tag
         run: echo "value=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.ECR_PUSH_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
