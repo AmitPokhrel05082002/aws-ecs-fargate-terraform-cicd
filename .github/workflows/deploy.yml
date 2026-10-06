@@ -1,0 +1,78 @@
+name: Deploy
+
+# push to main:   build once -> staging -> (approval) -> production
+# manual run:     deploy any existing image tag to one environment (rollback)
+on:
+  push:
+    branches: [main]
+    paths:
+      - app/**
+      - .github/workflows/deploy.yml
+      - .github/workflows/deploy-ecs.yml
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy to
+        type: choice
+        options: [staging, production]
+        required: true
+      image_tag:
+        description: Existing image tag (git SHA, first 12 characters) to deploy
+        type: string
+        required: true
+
+permissions:
+  id-token: write # GitHub OIDC -> short-lived AWS credentials
+  contents: read
+
+jobs:
+  build:
+    name: Build and push image
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.tag.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: tag
+        run: echo "value=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.ECR_PUSH_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push
+        env:
+          IMAGE: ${{ vars.ECR_REGISTRY }}/${{ vars.PROJECT_NAME }}:${{ steps.tag.outputs.value }}
+        run: |
+          docker build --build-arg GIT_SHA=${{ steps.tag.outputs.value }} -t "$IMAGE" app
+          docker push "$IMAGE"
+          echo "Pushed \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+
+  staging:
+    name: Staging
+    needs: build
+    uses: ./.github/workflows/deploy-ecs.yml
+    with:
+      environment: staging
+      image_tag: ${{ needs.build.outputs.image_tag }}
+
+  production:
+    name: Production
+    needs: [build, staging] # the exact image tested in staging is promoted
+    uses: ./.github/workflows/deploy-ecs.yml
+    with:
+      environment: production
+      image_tag: ${{ needs.build.outputs.image_tag }}
+
+  manual:
+    name: Manual deploy / rollback
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/deploy-ecs.yml
+    with:
+      environment: ${{ inputs.environment }}
+      image_tag: ${{ inputs.image_tag }}

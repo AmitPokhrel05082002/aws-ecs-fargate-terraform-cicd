@@ -1,0 +1,67 @@
+name: Deploy to ECS (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      image_tag:
+        type: string
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.image_tag }}
+    runs-on: ubuntu-latest
+    # The GitHub environment gates the deploy (add required reviewers to
+    # "production") and is the only place the deploy role can be assumed from.
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: ecs-deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    timeout-minutes: 20
+    env:
+      NAME: ${{ vars.PROJECT_NAME }}-${{ inputs.environment }}
+      IMAGE: ${{ vars.ECR_REGISTRY }}/${{ vars.PROJECT_NAME }}:${{ inputs.image_tag }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Check the image exists
+        run: |
+          aws ecr describe-images \
+            --repository-name "${{ vars.PROJECT_NAME }}" \
+            --image-ids imageTag="${{ inputs.image_tag }}" > /dev/null
+
+      # Start from the latest task definition so Terraform's settings
+      # (CPU, memory, env vars, roles) are kept; only the image changes.
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "$NAME" \
+            --query taskDefinition > task-definition.json
+
+      - id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: app
+          image: ${{ env.IMAGE }}
+
+      - name: Deploy and wait for the service to be stable
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          cluster: ${{ env.NAME }}
+          service: ${{ env.NAME }}
+          wait-for-service-stability: true
+
+      - name: Summary
+        run: echo "Deployed \`${{ inputs.image_tag }}\` to **${{ inputs.environment }}**" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,62 @@
+name: CI
+
+# Runs on every pull request. Needs no AWS credentials.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app:
+    name: App tests and Docker build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - run: npm ci
+      - run: npm test
+
+      - name: Build image
+        run: docker build --build-arg GIT_SHA=${{ github.sha }} -t sample-saas:ci .
+
+  terraform:
+    name: Terraform checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.12.2
+
+      - name: Format
+        run: terraform fmt -check -recursive -diff infra
+
+      - name: Staging and production use identical code
+        run: |
+          diff infra/envs/staging/main.tf infra/envs/production/main.tf
+          diff infra/envs/staging/variables.tf infra/envs/production/variables.tf
+
+      - name: Validate
+        run: |
+          for dir in infra/bootstrap infra/envs/staging infra/envs/production; do
+            echo "::group::$dir"
+            terraform -chdir="$dir" init -backend=false -input=false
+            terraform -chdir="$dir" validate
+            echo "::endgroup::"
+          done
